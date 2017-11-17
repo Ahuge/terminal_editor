@@ -7,7 +7,7 @@ import sys
 import traceback
 
 
-DEBUGGING = False
+DEBUGGING = True
 
 
 class DebugFile(object):
@@ -22,6 +22,19 @@ class DebugFile(object):
 
 
 DEBUG = DebugFile()
+
+
+class Ordinal(object):
+    ESCAPE = 27
+    THREE = 51
+    TILDE = 126
+    DEL = 127
+    CTRL_Q = 17
+    LEFT_SQUARE_BRACKET = 91
+    UP = 65
+    DOWN = 66
+    RIGHT = 67
+    LEFT = 68
 
 
 class ANSI(object):
@@ -54,7 +67,7 @@ class Editor(object):
     def __init__(self, path="test.txt"):
         super(Editor, self).__init__()
         with open(path, "rt") as fh:
-            self.lines = map(self.strip_line_ending, fh.readlines())
+            self.lines = list(map(self.strip_line_ending, fh.readlines()))
 
         self.rows, self.columns = 0, 0
         self.buffer = Buffer(self.lines)
@@ -104,34 +117,97 @@ class Editor(object):
         ANSI.move_cursor(self.cursor.row, self.cursor.column)
 
     def handle_input(self):
-        character = self.getchar()
-        print(character)
-        if character == ANSI.CTRL_Q:
+        character = ord(self.getchar())
+        DEBUG.write(str(character))
+
+        if character == Ordinal.CTRL_Q:
             ANSI.clear_screen()
             sys.exit(0)
-        elif character == ANSI.ESCAPE:
-            character = self.getchar() + self.getchar()
-            if character == ANSI.KEY_UP:
-                print("UP!!")
-                self.cursor, self.buffer = self.cursor.up(self.buffer, self.rows, self.columns)
-                return
-            if character == ANSI.KEY_DOWN:
-                print("DOWN!!")
-                self.cursor, self.buffer = self.cursor.down(self.buffer, self.rows, self.columns)
-                return
-            if character == ANSI.KEY_LEFT:
-                print("LEFT!!")
-                self.cursor, self.buffer = self.cursor.left(self.buffer, self.rows, self.columns)
-                return
-            if character == ANSI.KEY_RIGHT:
-                print("RIGHT!!")
-                self.cursor, self.buffer = self.cursor.right(self.buffer, self.rows, self.columns)
-                return
-        else:
-            self.buffer = self.buffer.insert(
-                character, self.cursor.row, self.cursor.column
+        elif character == Ordinal.DEL:
+            original_buffer = self.buffer
+            self.buffer = self.buffer.remove(
+                self.cursor.row, self.cursor.column
             )
-            self.cursor, self.buffer = self.cursor.right(self.buffer, self.rows, self.columns)
+            if self.buffer is not original_buffer:
+                self.cursor, self.buffer = self.cursor.left(
+                    self.buffer,
+                    self.rows,
+                    self.columns
+                )
+        elif character == Ordinal.ESCAPE:
+            character = ord(self.getchar())
+            DEBUG.write(str(character))
+            # character = self.getchar() + self.getchar()
+            if character == Ordinal.LEFT_SQUARE_BRACKET:
+                character = ord(self.getchar())
+                DEBUG.write(str(character))
+                if character == Ordinal.UP:
+                    self.cursor, self.buffer = self.cursor.up(
+                        self.buffer,
+                        self.rows,
+                        self.columns
+                    )
+                    return
+                elif character == Ordinal.DOWN:
+                    self.cursor, self.buffer = self.cursor.down(
+                        self.buffer,
+                        self.rows,
+                        self.columns
+                    )
+                    return
+                elif character == Ordinal.LEFT:
+                    self.cursor, self.buffer = self.cursor.left(
+                        self.buffer,
+                        self.rows,
+                        self.columns
+                    )
+                    return
+                elif character == Ordinal.RIGHT:
+                    self.cursor, self.buffer = self.cursor.right(
+                        self.buffer,
+                        self.rows,
+                        self.columns
+                    )
+                    return
+                elif character == Ordinal.THREE:
+                    character = ord(self.getchar())
+                    DEBUG.write(str(character))
+                    if character == Ordinal.TILDE:
+                        # Move the cursor over one.
+                        column = self.cursor.column
+                        self.cursor, self.buffer = self.cursor.right(
+                            self.buffer,
+                            self.rows,
+                            self.columns
+                        )
+                        if self.cursor.column == column:
+                            # We didn't move.
+                            return
+
+                        # Run a backspace.
+                        original_buffer = self.buffer
+                        self.buffer = self.buffer.remove(
+                            self.cursor.row, self.cursor.column
+                        )
+                        if self.buffer is not original_buffer:
+                            self.cursor, self.buffer = self.cursor.left(
+                                self.buffer,
+                                self.rows,
+                                self.columns,
+                            )
+
+        else:
+            original_buffer = self.buffer
+            self.buffer = self.buffer.insert(
+                chr(character), self.cursor.row, self.cursor.column
+            )
+            # Only move the cursor if we added something.
+            if self.buffer is not original_buffer:
+                self.cursor, self.buffer = self.cursor.right(
+                    self.buffer,
+                    self.rows,
+                    self.columns
+                )
 
 
 class Buffer(object):
@@ -157,12 +233,31 @@ class Buffer(object):
             display_column=self.pointer_column
         )
 
+    def remove(self, row, column):
+        row = row + self.pointer_row
+        if row >= self.line_count():
+            return self
+        column = column + self.pointer_column
+        lines = [line for line in self.lines]
+
+        line = list(lines[row])
+        line.pop(column)
+        lines[row] = "".join(line)
+        return Buffer(
+            lines,
+            display_row=self.pointer_row,
+            display_column=self.pointer_column
+        )
+
     def render(self, rows, columns):
         row = self.pointer_row
         col = self.pointer_column
         print("Pointer at %d" % self.pointer_row)
+
         for line in self.lines[row:row+rows-1]:
             text = line[col:col+columns-1]
+            if r"\x1b" in text:
+                DEBUG.write("ANSI.ESCAPE found!")
             sys.stdout.write(text + ANSI.newline)
 
     def line_count(self):
@@ -210,28 +305,13 @@ class Cursor(object):
         # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
         #                                 Row                                 #
         # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
-        DEBUG.write("--------------------------------------------------------")
-        # DEBUG.write("Clamping.")
-        # DEBUG.write("Terminal Size: %d x %d" % (display_rows, display_columns))
-        # DEBUG.write("Cursor position: %d x %d" % (self.row, self.column))
-        # DEBUG.write("Line count: %d" % (buffer.line_count() - 1))
-
-        # If the row is greater than the line count, clamp.
+       # If the row is greater than the line count, clamp.
         cursor_row = min(self.row, buffer.line_count() - 1)
-        # If the row is less than 0, clamp.
-        # cursor_row = max(cursor_row, 0)
-
-        DEBUG.write("Cursor Row: %d" % cursor_row)
-        DEBUG.write("Buffer Row: %d" % buffer.pointer_row)
-
-        DEBUG.write("Screen row: %d" % cursor_row)
-        DEBUG.write("Screen down: %s" % (cursor_row >= (display_rows-1)))
 
         # If the row is greater than the display rows plus display offset,
         # move the display.
         if cursor_row > (display_rows-1):
             offset = cursor_row - (display_rows-1)
-            DEBUG.write("Down offset is %d" % offset)
             result_row = offset + cursor_row + buffer.pointer_row - 1
             if result_row > buffer.line_count():
                 offset = 0
@@ -239,15 +319,9 @@ class Cursor(object):
             cursor_row = display_rows - 1
         elif cursor_row < 0:
             offset = cursor_row * -1
-            DEBUG.write("Amount above screen: %d" % offset)
             # result_row = cursor_row +
             buffer = buffer.up(count=offset)
             cursor_row = 0
-        # If the row is less than the display offset, move the display
-        # elif cursor_row < buffer.pointer_row:
-        #     offset = buffer.pointer_row - cursor_row
-        #     DEBUG.write("Amount above screen: %d" % offset)
-        #     buffer = buffer.up(count=offset)
 
         DEBUG.write(
             "---------\nDisplaying rows %d to %d" % (

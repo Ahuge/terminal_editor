@@ -42,6 +42,8 @@ I am on line 41
 I am on line 42
 I am on line 43
 I am on line 44
+\x1B[01;31mexamplefile.zip\x1b[00m
+ls\r\n\x1b[00m\x1b[01;31mexamplefile.zip\x1b[00m\r\n\x1b[01;31m
 I am on line 45
 I am on line 46
 I am on line 47
