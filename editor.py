@@ -63,6 +63,7 @@ class Editor(object):
             ch = sys.stdin.read(1)
         except Exception as err:
             print(err)
+            return
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         return ch
