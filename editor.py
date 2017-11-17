@@ -26,6 +26,9 @@ DEBUG = DebugFile()
 
 class Ordinal(object):
     ESCAPE = 27
+    O = 79
+    F = 70
+    H = 72
     THREE = 51
     TILDE = 126
     DEL = 127
@@ -126,7 +129,7 @@ class Editor(object):
         elif character == Ordinal.DEL:
             original_buffer = self.buffer
             self.buffer = self.buffer.remove(
-                self.cursor.row, self.cursor.column
+                self.cursor.row, self.cursor.column-1
             )
             if self.buffer is not original_buffer:
                 self.cursor, self.buffer = self.cursor.left(
@@ -173,28 +176,41 @@ class Editor(object):
                     character = ord(self.getchar())
                     DEBUG.write(str(character))
                     if character == Ordinal.TILDE:
-                        # Move the cursor over one.
-                        column = self.cursor.column
-                        self.cursor, self.buffer = self.cursor.right(
-                            self.buffer,
-                            self.rows,
-                            self.columns
-                        )
-                        if self.cursor.column == column:
-                            # We didn't move.
-                            return
-
-                        # Run a backspace.
+                         # Run a backspace.
                         original_buffer = self.buffer
                         self.buffer = self.buffer.remove(
                             self.cursor.row, self.cursor.column
                         )
-                        if self.buffer is not original_buffer:
-                            self.cursor, self.buffer = self.cursor.left(
-                                self.buffer,
-                                self.rows,
-                                self.columns,
-                            )
+                        # if self.buffer is not original_buffer:
+                        #     self.cursor, self.buffer = self.cursor.left(
+                        #         self.buffer,
+                        #         self.rows,
+                        #         self.columns,
+                        #     )
+            elif character == Ordinal.O:
+                character = ord(self.getchar())
+                DEBUG.write(str(character))
+                if character == Ordinal.F:
+                    # END key
+                    line_length = self.buffer.line_length(
+                        self.cursor.row + self.buffer.pointer_row
+                    )
+
+                    self.cursor, self.buffer = self.cursor.right(
+                        self.buffer,
+                        self.rows,
+                        self.columns,
+                        count=line_length-self.cursor.column
+                    )
+                elif character == Ordinal.H:
+                    # HOME key
+                    self.cursor, self.buffer = self.cursor.left(
+                        self.buffer,
+                        self.rows,
+                        self.columns,
+                        count=self.cursor.column+self.buffer.pointer_column
+                    )
+
 
         else:
             original_buffer = self.buffer
