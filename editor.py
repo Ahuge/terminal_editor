@@ -1,7 +1,27 @@
+import fcntl
+import os
 import tty
 import termios
+import struct
 import sys
 import traceback
+
+
+DEBUGGING = False
+
+
+class DebugFile(object):
+    def __init__(self):
+        super(DebugFile, self).__init__()
+        self.fp = os.path.join(os.path.dirname(__file__), "debug.log")
+
+    def write(self, msg):
+        if DEBUGGING:
+            with open(self.fp, "a") as fh:
+                fh.writelines([msg + "\n"])
+
+
+DEBUG = DebugFile()
 
 
 class ANSI(object):
@@ -36,6 +56,7 @@ class Editor(object):
         with open(path, "rt") as fh:
             self.lines = map(self.strip_line_ending, fh.readlines())
 
+        self.rows, self.columns = 0, 0
         self.buffer = Buffer(self.lines)
         self.cursor = Cursor()
         print(self.cursor)
@@ -54,6 +75,13 @@ class Editor(object):
                 traceback.print_exc()
                 break
 
+    def size(self):
+        rows, cols = struct.unpack(
+            "hh",
+            fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, "1234")
+        )
+        return int(rows), int(cols)
+
     def getchar(self):
         # Returns a single character from standard input
         fd = sys.stdin.fileno()
@@ -71,9 +99,9 @@ class Editor(object):
     def render(self):
         ANSI.clear_screen()
         ANSI.move_cursor(0, 0)
-        self.buffer.render()
+        self.rows, self.columns = self.size()
+        self.buffer.render(self.rows, self.columns)
         ANSI.move_cursor(self.cursor.row, self.cursor.column)
-        pass
 
     def handle_input(self):
         character = self.getchar()
@@ -85,41 +113,57 @@ class Editor(object):
             character = self.getchar() + self.getchar()
             if character == ANSI.KEY_UP:
                 print("UP!!")
-                self.cursor = self.cursor.up(self.buffer)
+                self.cursor, self.buffer = self.cursor.up(self.buffer, self.rows, self.columns)
                 return
             if character == ANSI.KEY_DOWN:
                 print("DOWN!!")
-                self.cursor = self.cursor.down(self.buffer)
+                self.cursor, self.buffer = self.cursor.down(self.buffer, self.rows, self.columns)
                 return
             if character == ANSI.KEY_LEFT:
                 print("LEFT!!")
-                self.cursor = self.cursor.left(self.buffer)
+                self.cursor, self.buffer = self.cursor.left(self.buffer, self.rows, self.columns)
                 return
             if character == ANSI.KEY_RIGHT:
                 print("RIGHT!!")
-                self.cursor = self.cursor.right(self.buffer)
+                self.cursor, self.buffer = self.cursor.right(self.buffer, self.rows, self.columns)
                 return
-        self.buffer = self.buffer.insert(
-            character, self.cursor.row, self.cursor.column
-        )
+        else:
+            self.buffer = self.buffer.insert(
+                character, self.cursor.row, self.cursor.column
+            )
+            self.cursor, self.buffer = self.cursor.right(self.buffer, self.rows, self.columns)
 
 
 class Buffer(object):
-    def __init__(self, lines):
+    def __init__(self, lines, display_row=0, display_column=0):
         super(Buffer, self).__init__()
         self.lines = lines
+        self.pointer_row = min(max(display_row, 0), self.line_count())
+        self.pointer_column = display_column
 
     def insert(self, char, row, column):
+        row = row + self.pointer_row
+        if row >= self.line_count():
+            return self
+        column = column + self.pointer_column
         lines = [line for line in self.lines]
 
         line = list(lines[row])
         line.insert(column, char)
         lines[row] = "".join(line)
-        return Buffer(lines)
+        return Buffer(
+            lines,
+            display_row=self.pointer_row,
+            display_column=self.pointer_column
+        )
 
-    def render(self):
-        for line in self.lines:
-            sys.stdout.write(line + ANSI.newline)
+    def render(self, rows, columns):
+        row = self.pointer_row
+        col = self.pointer_column
+        print("Pointer at %d" % self.pointer_row)
+        for line in self.lines[row:row+rows-1]:
+            text = line[col:col+columns-1]
+            sys.stdout.write(text + ANSI.newline)
 
     def line_count(self):
         return len(self.lines)
@@ -127,39 +171,130 @@ class Buffer(object):
     def line_length(self, row):
         return len(self.lines[row])
 
+    def up(self, count=1):
+        return Buffer(
+            self.lines,
+            display_row=self.pointer_row - count,
+            display_column=self.pointer_column,
+        )
+
+    def down(self, count=1):
+        return Buffer(
+            self.lines,
+            display_row=self.pointer_row + count,
+            display_column=self.pointer_column,
+        )
+
+    def left(self, count=1):
+        return Buffer(
+            self.lines,
+            display_row=self.pointer_row,
+            display_column=self.pointer_column - count
+        )
+
+    def right(self, count=1):
+        return Buffer(
+            self.lines,
+            display_row=self.pointer_row,
+            display_column=self.pointer_column + count
+        )
+
 
 class Cursor(object):
-    def __init__(self, row=0, column=0, buffer=None):
+    def __init__(self, row=0, column=0):
         super(Cursor, self).__init__()
         self.row = row
         self.column = column
 
-    def clamp(self, buffer):
-        self.row = min(
-            max(self.row, 0),
-            buffer.line_count() - 1
-        )
-        self.column = min(
-            max(self.column, 0),
-            buffer.line_length(self.row) + 1
-        )
-        return self
+    def clamp(self, buffer, display_rows, display_columns):
+        # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
+        #                                 Row                                 #
+        # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
+        DEBUG.write("--------------------------------------------------------")
+        # DEBUG.write("Clamping.")
+        # DEBUG.write("Terminal Size: %d x %d" % (display_rows, display_columns))
+        # DEBUG.write("Cursor position: %d x %d" % (self.row, self.column))
+        # DEBUG.write("Line count: %d" % (buffer.line_count() - 1))
 
-    def up(self, buffer, count=1):
-        curs = Cursor(self.row - count, 0, self.column)
-        return curs.clamp(buffer)
+        # If the row is greater than the line count, clamp.
+        cursor_row = min(self.row, buffer.line_count() - 1)
+        # If the row is less than 0, clamp.
+        # cursor_row = max(cursor_row, 0)
 
-    def down(self, buffer, count=1):
+        DEBUG.write("Cursor Row: %d" % cursor_row)
+        DEBUG.write("Buffer Row: %d" % buffer.pointer_row)
+
+        DEBUG.write("Screen row: %d" % cursor_row)
+        DEBUG.write("Screen down: %s" % (cursor_row >= (display_rows-1)))
+
+        # If the row is greater than the display rows plus display offset,
+        # move the display.
+        if cursor_row > (display_rows-1):
+            offset = cursor_row - (display_rows-1)
+            DEBUG.write("Down offset is %d" % offset)
+            result_row = offset + cursor_row + buffer.pointer_row - 1
+            if result_row > buffer.line_count():
+                offset = 0
+            buffer = buffer.down(count=offset)
+            cursor_row = display_rows - 1
+        elif cursor_row < 0:
+            offset = cursor_row * -1
+            DEBUG.write("Amount above screen: %d" % offset)
+            # result_row = cursor_row +
+            buffer = buffer.up(count=offset)
+            cursor_row = 0
+        # If the row is less than the display offset, move the display
+        # elif cursor_row < buffer.pointer_row:
+        #     offset = buffer.pointer_row - cursor_row
+        #     DEBUG.write("Amount above screen: %d" % offset)
+        #     buffer = buffer.up(count=offset)
+
+        DEBUG.write(
+            "---------\nDisplaying rows %d to %d" % (
+                buffer.pointer_row, buffer.pointer_row + display_rows -1
+            )
+        )
+        cursor_row = min(cursor_row, buffer.line_count() - 1)
+        cursor_row = max(cursor_row, 0)
+
+        # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
+        #                                Column                               #
+        # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
+
+        # If the column is greater than the line length, clamp.
+        cursor_column = min(self.column, buffer.line_length(cursor_row) + 1)
+        # If the column is less than 0, clamp.
+        cursor_column = max(cursor_column, 0)
+
+        # If the column is greater than the display columns plus display offset
+        # Move the display.
+        if cursor_column > (buffer.pointer_column + display_columns):
+            offset = (buffer.pointer_column + display_columns) - cursor_column
+            buffer = buffer.right(count=offset)
+        elif cursor_column < buffer.pointer_column:
+            offset = buffer.pointer_column - cursor_column
+            buffer = buffer.left(count=offset)
+
+        self.row = cursor_row
+        self.column = cursor_column
+        return self, buffer
+
+    def up(self, buffer, rows, columns, count=1):
+        curs = Cursor(self.row - count, self.column)
+        return curs.clamp(buffer, rows, columns)
+
+    def down(self, buffer, rows, columns, count=1):
         curs = Cursor(self.row + count, self.column)
-        return curs.clamp(buffer)
+        return curs.clamp(buffer, rows, columns)
 
-    def left(self, buffer, count=1):
-        curs = Cursor(self.row, self.column - count, 0)
-        return curs.clamp(buffer)
+    def left(self, buffer, rows, columns, count=1):
+        curs = Cursor(self.row, self.column - count)
+        return curs.clamp(buffer, rows, columns)
 
-    def right(self, buffer, count=1):
+    def right(self, buffer, rows, columns, count=1):
         curs = Cursor(self.row, self.column + count)
-        return curs.clamp(buffer)
+        return curs.clamp(buffer, rows, columns)
 
 
 e = Editor()
+
